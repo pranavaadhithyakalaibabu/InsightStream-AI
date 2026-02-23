@@ -32,12 +32,6 @@ Weighted Synthesizer (Probabilistic): Clusters insights into themes. Fix: Insigh
 
 **3. Requirements: Deterministic vs. Probabilistic**
 
-Requirement Type	Feature	Specification
-Deterministic	Text Cleaning	Regex normalization and PII redaction.
-Deterministic	Speaker Swap	Manual UI override to flip Interviewer/Participant roles in the preview.
-Probabilistic	Semantic Entailment	LLM-as-a-Judge verification of claims against source text.
-Probabilistic	Specificity Filter	Synthesizer must deprioritize generic statements (e.g., "Users want a fast app").
-Deterministic	Clipboard Export	Markdown/CSV export for immediate researcher use (V1 MVP Scope).
 <img width="617" height="97" alt="image" src="https://github.com/user-attachments/assets/1e1d7581-d6f5-4b66-b056-83c9e36b0711" />
 
 **4. User Journey & Workflow**
@@ -84,12 +78,7 @@ Failure Mode: Media Binaries. If FFmpeg/MoviePy is missing, the UI provides a cl
 
 **7. Non-Functional Requirements**
 
-Category	Requirement	Implementation
-Security	Stateless BYOK	API keys stored in volatile browser memory; never logged.
-Infrastructure	Media Processing	Server-side FFmpeg processing with auto-deletion of media post-transcription.
-Compliance	SOC2 / GDPR	PII redacted at ingest; Zero-retention on LLM provider side.
-Cost	Token Efficiency	Semantic de-duplication prevents auditing redundant data points.<img width="617" height="81" alt="image" src="https://github.com/user-attachments/assets/23b0ea90-ca7b-45cc-b1cb-4f52583b4228" />
-
+<img width="617" height="81" alt="image" src="https://github.com/user-attachments/assets/23b0ea90-ca7b-45cc-b1cb-4f52583b4228" />
 
 **8. User Correction Log (The Moat)**
 
