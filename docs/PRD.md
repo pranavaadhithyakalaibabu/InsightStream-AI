@@ -84,6 +84,11 @@ Failure Mode: Media Binaries. If FFmpeg/MoviePy is missing, the UI provides a cl
 
 **7. Non-Functional Requirements**
 
+Category	Requirement	Implementation
+Security	Stateless BYOK	API keys stored in volatile browser memory; never logged.
+Infrastructure	Media Processing	Server-side FFmpeg processing with auto-deletion of media post-transcription.
+Compliance	SOC2 / GDPR	PII redacted at ingest; Zero-retention on LLM provider side.
+Cost	Token Efficiency	Semantic de-duplication prevents auditing redundant data points.<img width="617" height="81" alt="image" src="https://github.com/user-attachments/assets/23b0ea90-ca7b-45cc-b1cb-4f52583b4228" />
 
 
 **8. User Correction Log (The Moat)**
