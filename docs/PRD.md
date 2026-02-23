@@ -37,8 +37,8 @@ Deterministic	Text Cleaning	Regex normalization and PII redaction.
 Deterministic	Speaker Swap	Manual UI override to flip Interviewer/Participant roles in the preview.
 Probabilistic	Semantic Entailment	LLM-as-a-Judge verification of claims against source text.
 Probabilistic	Specificity Filter	Synthesizer must deprioritize generic statements (e.g., "Users want a fast app").
-Deterministic	Clipboard Export	Markdown/CSV export for immediate researcher use (V1 MVP Scope).<img width="617" height="97" alt="image" src="https://github.com/user-attachments/assets/91d178da-61f0-418d-9394-78bbc10ff531" />
-
+Deterministic	Clipboard Export	Markdown/CSV export for immediate researcher use (V1 MVP Scope).
+<img width="617" height="97" alt="image" src="https://github.com/user-attachments/assets/1e1d7581-d6f5-4b66-b056-83c9e36b0711" />
 
 **4. User Journey & Workflow**
 
