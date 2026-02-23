@@ -2,7 +2,7 @@ AI-Native PRD: InsightStream (v2.0)
 
 Status: Approved | Owner: Pranav Aadhithya Kalaibabu | 
 
-1. The Problem Hypothesis: "The Research Tax"
+**1. The Problem Hypothesis: "The Research Tax"**
 
 Qualitative analysis is currently a tax researchers can't afford to pay.
 
@@ -10,13 +10,13 @@ The Friction: For every 1 hour of video, teams spend 4 hours in spreadsheets. Be
 
 The Goal: We are automating the grunt work of qualitative analysis. If the AI cannot provide a receipt (transcript link) for an insight, that insight does not exist to the system. We prioritize being right over being productive.
 
-2. Technical Architecture (The Logic)
+**2. Technical Architecture (The Logic)**
 
 <img width="3666" height="6166" alt="Transcript Extraction-2026-02-23-030554" src="https://github.com/user-attachments/assets/2748fb99-0299-4369-9e87-59304bda4499" />
 
 InsightStream uses a Sequential Workflow via LangGraph to maintain absolute control over the extraction and verification stages.
 
-2.1 The Pipeline
+**2.1 The Pipeline**
 
 Cleaning Node (Deterministic): Standardizes text and redacts PII. Ensures the model sees high-signal input only.
 
@@ -30,45 +30,11 @@ The Auditor (Trust Anchor): A zero-trust layer using Semantic Entailment. Every 
 
 Weighted Synthesizer (Probabilistic): Clusters insights into themes. Fix: Insights are weighted by Participant Count, not Token Frequency, to prevent "Loud User" bias. Includes a Novelty Filter to prioritize weird contradictions over obvious consensus.
 
-3. Requirements: Deterministic vs. Probabilistic
+**3. Requirements: Deterministic vs. Probabilistic**
 
-Requirement Type
 
-Feature
 
-Specification
-
-Deterministic
-
-Text Cleaning
-
-Regex normalization and PII redaction.
-
-Deterministic
-
-Speaker Swap
-
-Manual UI override to flip Interviewer/Participant roles in the preview.
-
-Probabilistic
-
-Semantic Entailment
-
-LLM-as-a-Judge verification of claims against source text.
-
-Probabilistic
-
-Specificity Filter
-
-Synthesizer must deprioritize generic statements (e.g., "Users want a fast app").
-
-Deterministic
-
-Clipboard Export
-
-Markdown/CSV export for immediate researcher use (V1 MVP Scope).
-
-4. User Journey & Workflow
+**4. User Journey & Workflow**
 
 Ingest (MVP Scope): Support for .txt and media files (.mp4/.mp3). PDF support excluded for V1 to avoid formatting-edge-case bloat.
 
@@ -82,7 +48,7 @@ Force Verify (Override): Allows researchers to manually validate an "Unverified"
 
 Correction Log: Every edit, approval, or rejection is logged as the primary data moat.
 
-5. Evaluation Metrics (Technical)
+**5. Evaluation Metrics (Technical)**
 
 Grounding Attribution Rate: 100%. Every insight must link to a transcript timestamp or it is suppressed.
 
@@ -94,7 +60,7 @@ Manual Override Rate: % of sessions where "Force Verify" or "Speaker Swap" is ut
 
 Latency: <45s for 60-minute transcripts via parallelization.
 
-6. Failure Handling & Edge Cases
+**6. Failure Handling & Edge Cases**
 
 Edge Case: Loud User Bias. Synthesizer must report a "Coverage Score." The UI will visually flag reports where a single participant dominates the insight generation to prevent over-indexing on one voice.
 
@@ -108,39 +74,11 @@ Edge Case: The "Hallucination of Absence". To mitigate the risk of missed insigh
 
 Failure Mode: Media Binaries. If FFmpeg/MoviePy is missing, the UI provides a clear non-technical error with a text-only fallback.
 
-7. Non-Functional Requirements
+**7. Non-Functional Requirements**
 
-Category
 
-Requirement
 
-Implementation
-
-Security
-
-Stateless BYOK
-
-API keys stored in volatile browser memory; never logged.
-
-Infrastructure
-
-Media Processing
-
-Server-side FFmpeg processing with auto-deletion of media post-transcription.
-
-Compliance
-
-SOC2 / GDPR
-
-PII redacted at ingest; Zero-retention on LLM provider side.
-
-Cost
-
-Token Efficiency
-
-Semantic de-duplication prevents auditing redundant data points.
-
-8. User Correction Log (The Moat)
+**8. User Correction Log (The Moat)**
 
 We ignore "flywheel" buzzwords. Our moat is the User Correction Log.
 
@@ -150,7 +88,7 @@ Storage & Access: To maintain the Stateless BYOK policy, these logs are stored i
 
 The Value: Our advantage isn't the model; it's the data. Every time a researcher corrects the AI, they are training our future proprietary advantage. This is the only way to outperform generic "Pro" models on niche domain jargon.
 
-9. Non-Goals
+**9. Non-Goals**
 
 Jira Integration: V1 focuses on clipboard/CSV export to fit researcher workflows.
 
