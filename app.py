@@ -13,7 +13,7 @@ import extra_streamlit_components as stx
 import pandas as pd
 import streamlit as st
 
-from agent import run_agent
+from agent import query_transcript, run_agent
 
 # Bundled ffmpeg path (imageio-ffmpeg); set once so Whisper and MoviePy use it
 _FFMPEG_EXE = None
@@ -69,10 +69,33 @@ def _patch_whisper_ffmpeg():
         pass
 
 
-def transcribe_media(media_file, model_size: str = "base") -> str:
+def _format_transcript_with_speakers(whisper_result: dict, fallback_text: str) -> str:
+    """
+    Format Whisper result with Speaker 0 / Speaker 1 labels for diarization.
+    Uses segments when available; assigns speakers by alternating (Interviewer=0, Participant=1).
+    """
+    segments = whisper_result.get("segments") or []
+    if not segments:
+        return f"Speaker 1: {fallback_text}"
+    lines = []
+    for i, seg in enumerate(segments):
+        speaker_id = i % 2
+        text = (seg.get("text") or "").strip()
+        if text:
+            lines.append(f"Speaker {speaker_id}: {text}")
+    return "\n".join(lines) if lines else f"Speaker 1: {fallback_text}"
+
+
+def transcribe_media(
+    media_file,
+    model_size: str = "base",
+    speaker_diarization: bool = True,
+) -> str:
     """
     Transcribe uploaded audio or video to text using OpenAI Whisper.
     For video (e.g. .mp4), extracts audio with moviepy first, then transcribes.
+    When speaker_diarization=True, output is formatted with "Speaker 0:" and "Speaker 1:" labels
+    so the Extractor can ignore Interviewer (Speaker 0) and only use Participant (Speaker 1).
     Caller must ensure media_file is an upload with .name and .read()/.getvalue().
     """
     _get_ffmpeg_exe()
@@ -101,8 +124,14 @@ def transcribe_media(media_file, model_size: str = "base") -> str:
             audio_path = video_path
         import whisper
         model = whisper.load_model(model_size)
-        result = model.transcribe(audio_path, language="en", verbose=False)
-        return (result.get("text") or "").strip()
+        opts = {"language": "en", "verbose": False}
+        if speaker_diarization:
+            opts["word_timestamps"] = True
+        result = model.transcribe(audio_path, **opts)
+        text = (result.get("text") or "").strip()
+        if speaker_diarization and text:
+            text = _format_transcript_with_speakers(result, text)
+        return text
     finally:
         if video_clip is not None and hasattr(video_clip, "close"):
             video_clip.close()
@@ -307,7 +336,7 @@ with main_workspace:
             if st.button("Transcribe", type="primary", key="transcribe_btn"):
                 with st.spinner("Transcribing audio…"):
                     try:
-                        transcript_text = transcribe_media(media_file)
+                        transcript_text = transcribe_media(media_file, speaker_diarization=True)
                         st.session_state.media_transcript = transcript_text
                         st.success("Transcription complete. Run **Analyze transcript** below to get insights.")
                     except Exception as e:
@@ -320,6 +349,12 @@ with main_workspace:
                 key="media_transcript_display",
                 disabled=True,
             )
+            if st.session_state.media_transcript.strip():
+                if st.button("Swap Speaker 0 and 1", key="swap_speakers_btn", help="Fix diarization errors without re-transcribing."):
+                    t = st.session_state.media_transcript
+                    t = t.replace("Speaker 0", "__SPEAKER_1__").replace("Speaker 1", "Speaker 0").replace("__SPEAKER_1__", "Speaker 1")
+                    st.session_state.media_transcript = t
+                    st.rerun()
         # Do not clear media_transcript when media_file is None (e.g. on rerun); it would wipe the saved transcript
         st.markdown("<div style='margin-bottom: 1.5rem;'></div>", unsafe_allow_html=True)
 
@@ -357,6 +392,12 @@ with main_workspace:
                 st.markdown(f"**{item['name']}**")
                 preview = item["content"][:800] + ("..." if len(item["content"]) > 800 else "")
                 st.text(preview)
+                if item["name"] == "Media_Transcript" and item.get("content", "").strip():
+                    if st.button("Swap Speaker 0 and 1", key="swap_speakers_preview_btn"):
+                        t = st.session_state.media_transcript
+                        t = t.replace("Speaker 0", "__SPEAKER_1__").replace("Speaker 1", "Speaker 0").replace("__SPEAKER_1__", "Speaker 1")
+                        st.session_state.media_transcript = t
+                        st.rerun()
                 st.markdown("---")
 
         if st.button("Analyze transcript", type="primary"):
@@ -377,6 +418,7 @@ with main_workspace:
                         error = str(e)
                 results.append({
                     "name": item["name"],
+                    "transcript": item["content"],
                     "feature_requests": feature_requests,
                     "pain_points": pain_points,
                     "core_themes": core_themes,
@@ -407,6 +449,34 @@ with main_workspace:
                             st.markdown(f"**{t.get('theme_name', '—')}** · Strategic importance: **{t.get('strategic_importance', '—')}/10**")
                             st.markdown(t.get("description", "—"))
                             st.markdown("---")
+                    st.divider()
+
+                st.subheader("Looking for something specific?")
+                rag_question = st.text_input(
+                    "Ask a question about this transcript (e.g. “What did they say about login?”)",
+                    key=f"rag_input_{safe}",
+                    placeholder="e.g. What did they say about login speed?",
+                    label_visibility="collapsed",
+                )
+                if st.button("Find in transcript", key=f"rag_btn_{safe}") and (rag_question or "").strip():
+                    full_transcript = res.get("transcript") or ""
+                    if not full_transcript.strip():
+                        st.warning("No transcript stored for this result. Re-run analysis to enable queries.")
+                    else:
+                        with st.spinner("Searching transcript…"):
+                            try:
+                                answer = query_transcript(
+                                    question=rag_question.strip(),
+                                    transcript=full_transcript,
+                                    api_key=api_key.strip() or None,
+                                    model=model,
+                                )
+                                if answer:
+                                    st.markdown(answer)
+                                else:
+                                    st.caption("No answer returned.")
+                            except Exception as e:
+                                st.error(f"Query failed: {e}")
                     st.divider()
 
                 st.subheader("Identified Pain Points")
