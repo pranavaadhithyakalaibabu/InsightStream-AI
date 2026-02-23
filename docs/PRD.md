@@ -2,7 +2,7 @@ AI-Native PRD: InsightStream (v2.0)
 
 Status: Approved | Owner: Pranav Aadhithya Kalaibabu | 
 
-**1. The Problem Hypothesis: "The Research Tax"**
+<u>**1. The Problem Hypothesis: "The Research Tax"**</u>
 
 Qualitative analysis is currently a tax researchers can't afford to pay.
 
