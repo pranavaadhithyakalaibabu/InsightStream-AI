@@ -82,6 +82,8 @@ Failure Mode: Media Binaries. If FFmpeg/MoviePy is missing, the UI provides a cl
 
 **8. User Correction Log (The Moat)**
 
+<img width="3840" height="3840" alt="flywheel-white-4K" src="https://github.com/user-attachments/assets/a85095c2-93b8-4f67-a79b-0f700e9d1f69" />
+
 We ignore "flywheel" buzzwords. Our moat is the User Correction Log.
 
 The Asset: A deterministic record of every time a researcher corrects, edits, or overrides an AI insight.
