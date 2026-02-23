@@ -50,6 +50,8 @@ Correction Log: Every edit, approval, or rejection is logged as the primary data
 
 **5. Evaluation Metrics (Technical)**
 
+<img width="3840" height="2160" alt="llm-judge-flow-WHITE-4K" src="https://github.com/user-attachments/assets/4f69db89-c93d-478d-9761-576b8a293a4a" />
+
 Grounding Attribution Rate: 100%. Every insight must link to a transcript timestamp or it is suppressed.
 
 Synthesis Coverage: >90%. Percentage of validated atomic insights represented in final themes. Note: The system logs exactly which atomic insights were dropped during synthesis so they can be retrieved from the "Unverified" bucket if necessary.
