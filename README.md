@@ -159,8 +159,11 @@ InsightStream-AI/
 
 ## Metrics
 
+**North Star:** Research Throughput Multiplier — hours of interview content analyzed per PM per week. Baseline: 2–3 hrs (1–2 interviews manually). Target: 15–20 hrs (6–8 interviews via InsightStream). Measurable post-deployment via upload volume telemetry.
+
 | Metric | Target | Current Status |
 |--------|--------|---------------|
+| Research Throughput | 15–20 hrs/PM/week | Not yet measured. Requires production user base and telemetry |
 | Precision (Auditor) | 100% | 100% observed across 15 test pairs (0 false positives) |
 | Recall (Auditor) | ≥ 75% | 75–89% in testing. Rate limiting caused false negatives on free tier |
 | Latency (60-min transcript) | < 45s | Achievable on paid API tier. Free tier exceeds due to 429 rate limits |
