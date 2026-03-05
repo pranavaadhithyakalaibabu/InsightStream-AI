@@ -148,12 +148,12 @@ InsightStream-AI/
 
 | Document | What It Covers |
 |----------|---------------|
-| **AI-Native PRD** | Golden evaluation dataset (5 test cases), model selection rationale, 5 failure modes with mitigations, success metrics |
-| **Model Card** | Gemini 2.5 Flash specs (Sparse MoE, 1M context, Jan 2025 cutoff), 5 bias categories, eval results, 5 caveats, EU AI Act classification |
-| **Data Flywheel** | Buy vs. Bake analysis with 3 trigger conditions, 3-step data flywheel, 5 proprietary data assets, unit economics ($0.02/interview), cold start strategy |
-| **Ethics Charter** | Zero Data Retention architecture, PII handling (current gaps + NER roadmap), cultural bias analysis, participant disclosure template, 10-row risk matrix |
-| **UX Spec** | Confidence-state card design (green/amber/gray), 45-second wait vibe map, Verification Center interaction model, Jira integration spec, 10 AI feedback signals |
-| **Eval Harness** | 17-column Golden Dataset schema, 15 hard-mode test cases, auditor confusion matrix, 1–5 grading rubric, regression testing protocol |
+| [**AI-Native PRD**](docs/InsightStream_AI_Native_PRD.pdf) | Golden evaluation dataset (5 test cases), model selection rationale, 5 failure modes with mitigations, success metrics |
+| [**Model Card**](docs/InsightStream_Model_Card.pdf) | Gemini 2.5 Flash specs (Sparse MoE, 1M context, Jan 2025 cutoff), 5 bias categories, eval results, 5 caveats, EU AI Act classification |
+| [**Data Flywheel**](docs/InsightStream_Data_Flywheel.pdf) | Buy vs. Bake analysis with 3 trigger conditions, 3-step data flywheel, 5 proprietary data assets, unit economics ($0.02/interview), cold start strategy |
+| [**Ethics Charter**](docs/InsightStream_Ethics_Charter.pdf) | Zero Data Retention architecture, PII handling (current gaps + NER roadmap), cultural bias analysis, participant disclosure template, 10-row risk matrix |
+| [**UX Spec**](docs/InsightStream_UX_Spec.pdf) | Confidence-state card design (green/amber/gray), 45-second wait vibe map, Verification Center interaction model, Jira integration spec, 10 AI feedback signals |
+| [**Eval Harness**](docs/InsightStream_Eval_Harness.pdf) | 17-column Golden Dataset schema, 15 hard-mode test cases, auditor confusion matrix, 1–5 grading rubric, regression testing protocol |
 
 ---
 
