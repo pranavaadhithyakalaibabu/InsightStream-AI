@@ -12,7 +12,7 @@ Analyzing 1 hour of customer interview requires roughly 4 hours of manual spread
 
 ## What This Does
 
-Upload a transcript. The system extracts structured insights in 15–45 seconds. Each insight includes a verbatim supporting quote, a confidence score (1–10), and speaker attribution. An adversarial Auditor node verifies every insight against the source text before it reaches the user. The user reviews, approves or rejects each insight, and exports to CSV.
+Upload a transcript. The system extracts structured insights in 45-60 seconds. Each insight includes a verbatim supporting quote, a confidence score (1–10), and speaker attribution. An adversarial Auditor node verifies every insight against the source text before it reaches the user. The user reviews, approves or rejects each insight, and exports to CSV.
 
 ---
 
