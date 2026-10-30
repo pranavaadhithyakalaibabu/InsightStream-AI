@@ -81,8 +81,7 @@ This project serves as a portfolio case study. Here's an honest breakdown:
 
 | Layer | Technology |
 |-------|-----------|
-| Hosted app | FastAPI on Vercel (`app.py`) |
-| Local UI | Streamlit (`streamlit_app.py`), including audio and video transcription |
+| Frontend | Streamlit |
 | Orchestration | LangGraph (StateGraph, conditional edges, parallel Send) |
 | AI / LLM | Gemini 2.5 Flash (default) / Gemini 2.5 Pro |
 | Schema Enforcement | Pydantic v2 + LangChain structured output |
@@ -107,18 +106,11 @@ cd InsightStream-AI
 python -m venv .venv
 source .venv/bin/activate      # macOS / Linux
 
-pip install -r requirements-local.txt
-streamlit run streamlit_app.py
+pip install -r requirements.txt
+streamlit run app.py
 ```
 
 Open `http://localhost:8501`. Enter your Gemini API key in the Control Panel. Select Gemini 2.5 Flash.
-
-The hosted Vercel app is the text analyzer in `app.py`. It does not bundle Whisper. Run that locally with:
-
-```bash
-pip install -r requirements.txt
-uvicorn app:app --reload
-```
 
 ---
 
@@ -138,12 +130,9 @@ uvicorn app:app --reload
 ```
 InsightStream-AI/
 ├── README.md
-├── agent.py               # LangGraph pipeline
-├── app.py                 # FastAPI app deployed on Vercel
-├── streamlit_app.py       # Local Streamlit UI, including media transcription
-├── requirements.txt       # Dependencies for the Vercel app
-├── requirements-local.txt # Streamlit, Whisper, and ffmpeg for local use
-├── vercel.json
+├── agent.py               # LangGraph pipeline: 6 nodes, 4 prompts, 658 lines
+├── app.py                 # Streamlit UI: 3 input methods, Verification Center, 554 lines
+├── requirements.txt       # 11 dependencies
 └── docs/
     ├── InsightStream_AI_Native_PRD.docx        # Aakash Gupta framework PRD
     ├── InsightStream_Model_Card.docx           # Mitchell et al. (2018) Model Card

@@ -1,426 +1,554 @@
 """
-Vercel entrypoint for InsightStream.
-
-Vercel loads this module and expects a top-level ASGI app named `app`.
-The original Streamlit UI remains in streamlit_app.py for local use.
-Audio and video transcription stay there too: Whisper and ffmpeg are too
-large for a Vercel Python function.
+InsightStream: Premium multimodal enterprise UI for the AI User Research Analyst.
+Input via paste, document upload, or media (Whisper transcription).
+Runs the LangGraph agent and displays structured feature requests in a card layout.
 """
 
 import os
 import re
+import subprocess
+import tempfile
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
-from pydantic import BaseModel, Field
+import extra_streamlit_components as stx
+import pandas as pd
+import streamlit as st
 
 from agent import query_transcript, run_agent
 
-app = FastAPI(title="InsightStream")
-
-ALLOWED_MODELS = ("gemini-2.5-flash", "gemini-2.5-pro")
-MAX_TRANSCRIPT_CHARS = 400_000
+# Bundled ffmpeg path (imageio-ffmpeg); set once so Whisper and MoviePy use it
+_FFMPEG_EXE = None
 
 
-class AnalyzeRequest(BaseModel):
-    transcript: str = Field(min_length=1, max_length=MAX_TRANSCRIPT_CHARS)
-    api_key: str = ""
-    model: str = "gemini-2.5-flash"
+def _get_ffmpeg_exe():
+    """Return path to ffmpeg (imageio-ffmpeg bundle or system). Used so Whisper finds ffmpeg."""
+    global _FFMPEG_EXE
+    if _FFMPEG_EXE is not None:
+        return _FFMPEG_EXE
+    try:
+        import imageio_ffmpeg
+        exe = imageio_ffmpeg.get_ffmpeg_exe()
+        if exe and os.path.isfile(exe):
+            _FFMPEG_EXE = exe
+            # Also put on PATH for moviepy and any other subprocess
+            ffmpeg_dir = os.path.dirname(exe)
+            path_sep = ";" if os.name == "nt" else ":"
+            os.environ["PATH"] = ffmpeg_dir + path_sep + os.environ.get("PATH", "")
+            return exe
+    except Exception:
+        pass
+    return None
 
 
-class QueryRequest(BaseModel):
-    transcript: str = Field(min_length=1, max_length=MAX_TRANSCRIPT_CHARS)
-    question: str = Field(min_length=1, max_length=2_000)
-    api_key: str = ""
-    model: str = "gemini-2.5-flash"
+def _patch_whisper_ffmpeg():
+    """Make Whisper use the bundled ffmpeg path (whisper uses hardcoded 'ffmpeg' in subprocess)."""
+    exe = _get_ffmpeg_exe()
+    if not exe:
+        return
+    try:
+        import whisper.audio as whisper_audio
+        from subprocess import CalledProcessError, run
+        import numpy as np
+        SAMPLE_RATE = getattr(whisper_audio, "SAMPLE_RATE", 16000)
+
+        def load_audio_patched(file: str, sr: int = SAMPLE_RATE):
+            cmd = [
+                exe,
+                "-nostdin", "-threads", "0",
+                "-i", file,
+                "-f", "s16le", "-ac", "1", "-acodec", "pcm_s16le",
+                "-ar", str(sr), "-",
+            ]
+            try:
+                out = run(cmd, capture_output=True, check=True).stdout
+            except CalledProcessError as e:
+                raise RuntimeError(f"Failed to load audio: {e.stderr.decode()}") from e
+            return np.frombuffer(out, np.int16).flatten().astype(np.float32) / 32768.0
+
+        whisper_audio.load_audio = load_audio_patched
+    except Exception:
+        pass
+
+
+def _format_transcript_with_speakers(whisper_result: dict, fallback_text: str) -> str:
+    """
+    Format Whisper result with Speaker 0 / Speaker 1 labels for diarization.
+    Uses segments when available; assigns speakers by alternating (Interviewer=0, Participant=1).
+    """
+    segments = whisper_result.get("segments") or []
+    if not segments:
+        return f"Speaker 1: {fallback_text}"
+    lines = []
+    for i, seg in enumerate(segments):
+        speaker_id = i % 2
+        text = (seg.get("text") or "").strip()
+        if text:
+            lines.append(f"Speaker {speaker_id}: {text}")
+    return "\n".join(lines) if lines else f"Speaker 1: {fallback_text}"
+
+
+def transcribe_media(
+    media_file,
+    model_size: str = "base",
+    speaker_diarization: bool = True,
+) -> str:
+    """
+    Transcribe uploaded audio or video to text using OpenAI Whisper.
+    For video (e.g. .mp4), extracts audio with moviepy first, then transcribes.
+    When speaker_diarization=True, output is formatted with "Speaker 0:" and "Speaker 1:" labels
+    so the Extractor can ignore Interviewer (Speaker 0) and only use Participant (Speaker 1).
+    Caller must ensure media_file is an upload with .name and .read()/.getvalue().
+    """
+    _get_ffmpeg_exe()
+    _patch_whisper_ffmpeg()
+    raw = media_file.getvalue() if hasattr(media_file, "getvalue") else media_file.read()
+    suffix = os.path.splitext(getattr(media_file, "name", "audio.mp3"))[1].lower() or ".mp3"
+    if suffix not in (".mp4", ".mp3", ".wav", ".m4a"):
+        suffix = ".mp3"
+    video_path = None
+    audio_path = None
+    video_clip = None
+    audio_clip = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(raw)
+            video_path = tmp.name
+        if suffix == ".mp4":
+            from moviepy import VideoFileClip
+            video_clip = VideoFileClip(video_path)
+            fd, audio_path = tempfile.mkstemp(suffix=".wav")
+            os.close(fd)
+            video_clip.audio.write_audiofile(audio_path, logger=None)
+            video_clip.close()
+            video_clip = None
+        else:
+            audio_path = video_path
+        import whisper
+        model = whisper.load_model(model_size)
+        opts = {"language": "en", "verbose": False}
+        if speaker_diarization:
+            opts["word_timestamps"] = True
+        result = model.transcribe(audio_path, **opts)
+        text = (result.get("text") or "").strip()
+        if speaker_diarization and text:
+            text = _format_transcript_with_speakers(result, text)
+        return text
+    finally:
+        if video_clip is not None and hasattr(video_clip, "close"):
+            video_clip.close()
+        if audio_clip is not None and hasattr(audio_clip, "close"):
+            audio_clip.close()
+        for p in (video_path, audio_path):
+            if p and p != video_path and os.path.isfile(p):
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+        if video_path and os.path.isfile(video_path):
+            try:
+                os.unlink(video_path)
+            except OSError:
+                pass
 
 
 def clean_transcript(text: str) -> str:
-    """Normalize transcript text so the LLM receives consistent formatting."""
+    """Normalize transcript text so the LLM receives consistent formatting regardless of input method."""
     if not text:
         return ""
+    # Normalize line endings: \r\n and \r -> single \n
     text = re.sub(r"\r\n|\r", "\n", text)
+    # Collapse multiple newlines to a single newline
     text = re.sub(r"\n\n+", "\n", text)
+    # Collapse multiple consecutive spaces to a single space
     text = re.sub(r" +", " ", text)
     return text.strip()
 
 
-def _resolve(api_key: str, model: str) -> tuple[str, str]:
-    key = (api_key or "").strip() or os.getenv("GEMINI_API_KEY", "").strip()
-    if not key:
-        raise HTTPException(
-            status_code=400,
-            detail="Add a Gemini API key, or set GEMINI_API_KEY on the server.",
-        )
-    chosen = model if model in ALLOWED_MODELS else ALLOWED_MODELS[0]
-    return key, chosen
+def _safe_key(name: str) -> str:
+    """Sanitize item name for Streamlit widget keys (alphanumeric and underscore only)."""
+    return re.sub(r"[^a-zA-Z0-9_]", "_", name)
 
 
-def _public_error(exc: BaseException, key: str) -> str:
-    text = str(exc)
-    if key:
-        text = text.replace(key, "[redacted]")
-    return text
+# ---------------------------------------------------------------------------
+# Page config and layout
+# ---------------------------------------------------------------------------
 
+st.set_page_config(
+    page_title="InsightStream",
+    page_icon="",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-@app.get("/api/health")
-def health():
-    return {"ok": True}
+# ---------------------------------------------------------------------------
+# Premium UI: hide default header and footer (standalone SaaS look)
+# ---------------------------------------------------------------------------
 
-
-@app.post("/api/analyze")
-def analyze(body: AnalyzeRequest):
-    transcript = clean_transcript(body.transcript)
-    if not transcript:
-        raise HTTPException(status_code=400, detail="Transcript is empty.")
-    key, model = _resolve(body.api_key, body.model)
-    try:
-        features, pains, themes, error = run_agent(transcript, api_key=key, model=model)
-    except Exception as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Analysis failed: {_public_error(exc, key)}",
-        ) from exc
-    if error and key:
-        error = error.replace(key, "[redacted]")
-    return {
-        "feature_requests": features,
-        "pain_points": pains,
-        "core_themes": themes,
-        "error": error,
-    }
-
-
-@app.post("/api/query")
-def ask(body: QueryRequest):
-    transcript = clean_transcript(body.transcript)
-    question = body.question.strip()
-    if not transcript or not question:
-        raise HTTPException(status_code=400, detail="Transcript and question are required.")
-    key, model = _resolve(body.api_key, body.model)
-    try:
-        answer = query_transcript(question, transcript, api_key=key, model=model)
-    except Exception as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Query failed: {_public_error(exc, key)}",
-        ) from exc
-    if key:
-        answer = answer.replace(key, "[redacted]")
-    return {"answer": answer}
-
-
-@app.get("/", response_class=HTMLResponse)
-def home():
-    return HTMLResponse(PAGE_HTML)
-
-
-PAGE_HTML = """<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>InsightStream</title>
-  <style>
-    :root {
-      color-scheme: dark;
-      --bg: #10110f;
-      --panel: #181a16;
-      --line: #2c2f28;
-      --text: #f4f1e8;
-      --muted: #a7a396;
-      --accent: #e2b15a;
-      --good: #8fbf8a;
-      --warn: #d7a15a;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      background: var(--bg);
-      color: var(--text);
-      font: 16px/1.5 "Avenir Next", "Segoe UI", sans-serif;
-    }
-    main { max-width: 980px; margin: 0 auto; padding: 40px 20px 80px; }
-    h1 { font-weight: 600; letter-spacing: -0.03em; margin: 0 0 6px; font-size: 2rem; }
-    .lede { color: var(--muted); margin: 0 0 28px; }
-    form, .results, .ask {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      padding: 18px;
-      margin-bottom: 18px;
-    }
-    label { display: block; font-size: 0.82rem; color: var(--muted); margin-bottom: 6px; }
-    input, select, textarea, button {
-      font: inherit;
-      color: var(--text);
-      background: #10110f;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-    }
-    input, select, textarea { width: 100%; padding: 10px 12px; }
-    textarea { min-height: 220px; resize: vertical; }
-    .row { display: grid; grid-template-columns: 1.4fr 0.8fr; gap: 12px; margin-bottom: 12px; }
-    .actions { display: flex; gap: 10px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
-    button {
-      background: var(--accent);
-      color: #1a1408;
-      border: 0;
-      padding: 10px 16px;
-      font-weight: 650;
-      cursor: pointer;
-    }
-    button.secondary { background: transparent; color: var(--text); border: 1px solid var(--line); }
-    button:disabled { opacity: 0.55; cursor: wait; }
-    .note { color: var(--muted); font-size: 0.85rem; }
-    .status { min-height: 1.4em; margin: 8px 0 0; }
-    .status.error { color: #e7a0a0; }
-    .group { margin-top: 8px; }
-    .group h2 { font-size: 1.05rem; margin: 18px 0 10px; }
-    .card {
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      padding: 12px 14px;
-      margin-bottom: 10px;
-      background: #121410;
-    }
-    .card h3 { margin: 0 0 6px; font-size: 1rem; }
-    .meta { color: var(--accent); font-size: 0.8rem; margin-bottom: 6px; }
-    blockquote {
-      margin: 8px 0 0;
-      padding-left: 10px;
-      border-left: 2px solid var(--line);
-      color: var(--muted);
-    }
-    .empty { color: var(--muted); }
-    @media (max-width: 700px) { .row { grid-template-columns: 1fr; } }
-  </style>
-</head>
-<body>
-  <main>
-    <h1>InsightStream</h1>
-    <p class="lede">Paste a customer interview. Each insight comes back with a verbatim quote, a confidence score, and a theme — after an auditor checks that the claim follows from the transcript.</p>
-    <form id="analyze-form">
-      <div class="row">
-        <div>
-          <label for="api-key">Gemini API key</label>
-          <input id="api-key" type="password" autocomplete="off" placeholder="Leave blank if GEMINI_API_KEY is set on the server" />
-        </div>
-        <div>
-          <label for="model">Model</label>
-          <select id="model">
-            <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
-            <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
-          </select>
-        </div>
-      </div>
-      <label for="transcript">Transcript</label>
-      <textarea id="transcript" placeholder="Paste the interview here, or load a .txt file."></textarea>
-      <div class="actions">
-        <button type="submit" id="analyze-btn">Analyze transcript</button>
-        <button type="button" class="secondary" id="file-btn">Load .txt</button>
-        <input id="file" type="file" accept=".txt,text/plain" hidden />
-        <span class="note">Analysis usually takes 15–60 seconds.</span>
-      </div>
-      <p class="status" id="status"></p>
-      <p class="note">Audio and video transcription stays in the local app: <code>streamlit run streamlit_app.py</code>. This hosted version analyzes text.</p>
-    </form>
-    <section class="results" id="results" hidden>
-      <div class="actions">
-        <button type="button" class="secondary" id="export-btn">Download CSV</button>
-      </div>
-      <div id="output"></div>
-    </section>
-    <section class="ask" id="ask" hidden>
-      <label for="question">Missing something?</label>
-      <input id="question" placeholder="Ask a question about this transcript" />
-      <div class="actions">
-        <button type="button" id="ask-btn">Ask</button>
-      </div>
-      <p class="status" id="answer"></p>
-    </section>
-  </main>
-  <script>
-    const transcript = document.getElementById("transcript");
-    const statusEl = document.getElementById("status");
-    const results = document.getElementById("results");
-    const output = document.getElementById("output");
-    const askSection = document.getElementById("ask");
-    const answerEl = document.getElementById("answer");
-    let lastPayload = null;
-
-    document.getElementById("file-btn").onclick = () => document.getElementById("file").click();
-    document.getElementById("file").onchange = async (event) => {
-      const file = event.target.files && event.target.files[0];
-      if (!file) return;
-      transcript.value = await file.text();
-    };
-
-    function payload() {
-      return {
-        transcript: transcript.value,
-        api_key: document.getElementById("api-key").value,
-        model: document.getElementById("model").value,
-      };
-    }
-
-    function setStatus(message, isError) {
-      statusEl.textContent = message || "";
-      statusEl.className = isError ? "status error" : "status";
-    }
-
-    async function readError(response) {
-      try {
-        const data = await response.json();
-        if (typeof data.detail === "string") return data.detail;
-        if (Array.isArray(data.detail) && data.detail[0] && data.detail[0].msg) return data.detail[0].msg;
-      } catch (err) {}
-      return "Request failed (" + response.status + ").";
-    }
-
-    function card(title, lines, quote, meta) {
-      const el = document.createElement("article");
-      el.className = "card";
-      const h = document.createElement("h3");
-      h.textContent = title || "Insight";
-      el.appendChild(h);
-      if (meta) {
-        const m = document.createElement("div");
-        m.className = "meta";
-        m.textContent = meta;
-        el.appendChild(m);
-      }
-      lines.forEach((line) => {
-        if (!line) return;
-        const p = document.createElement("p");
-        p.textContent = line;
-        el.appendChild(p);
-      });
-      if (quote) {
-        const q = document.createElement("blockquote");
-        q.textContent = quote;
-        el.appendChild(q);
-      }
-      return el;
-    }
-
-    function render(data) {
-      output.replaceChildren();
-      const groups = [
-        ["Feature requests", data.feature_requests || [], (item) => card(
-          item.user_need,
-          [item.proposed_solution],
-          item.supporting_quote,
-          "Confidence " + item.confidence_score + (item.source_id ? " · " + item.source_id : "")
-        )],
-        ["Pain points", data.pain_points || [], (item) => card(
-          item.issue_description,
-          [item.business_impact],
-          item.supporting_quote,
-          "Severity " + item.confidence_score + (item.source_id ? " · " + item.source_id : "")
-        )],
-        ["Core themes", data.core_themes || [], (item) => card(
-          item.theme_name,
-          [item.description],
-          "",
-          "Importance " + item.strategic_importance
-        )],
-      ];
-      groups.forEach(([title, items, build]) => {
-        const wrap = document.createElement("div");
-        wrap.className = "group";
-        const h = document.createElement("h2");
-        h.textContent = title;
-        wrap.appendChild(h);
-        if (!items.length) {
-          const empty = document.createElement("p");
-          empty.className = "empty";
-          empty.textContent = "None returned.";
-          wrap.appendChild(empty);
-        } else {
-          items.forEach((item) => wrap.appendChild(build(item)));
+st.markdown(
+    """
+    <style>
+        /* Hide default Streamlit branding and sidebar */
+        #MainMenu { visibility: hidden; }
+        footer { visibility: hidden; }
+        header { visibility: hidden; }
+        section[data-testid="stSidebar"] { display: none !important; }
+        div.block-container { padding-top: 2rem !important; }
+        /* Minimalist underline tabs: transparent, bottom border only on active */
+        [data-baseweb="tab-list"] { border-bottom: 1px solid #2A2A2A !important; gap: 0.5rem; background: transparent !important; }
+        button[data-baseweb="tab"], [data-baseweb="tab"] {
+            border: none !important;
+            border-bottom: 2px solid transparent !important;
+            border-radius: 0 !important;
+            background: transparent !important;
+            color: #6b7280 !important;
         }
-        output.appendChild(wrap);
-      });
-      results.hidden = false;
-      askSection.hidden = false;
-    }
+        button[data-baseweb="tab"][aria-selected="true"], [data-baseweb="tab"][aria-selected="true"] {
+            color: #FAFAFA !important;
+            border-bottom-color: #3B82F6 !important;
+        }
+        [data-theme="light"] button[data-baseweb="tab"][aria-selected="true"],
+        [data-theme="light"] [data-baseweb="tab"][aria-selected="true"] { color: #0f172a !important; }
+        /* Borderless inputs: subtle background only (dark) */
+        [data-testid="stTextArea"] textarea, [data-testid="stTextArea"] div {
+            border: none !important;
+            border-radius: 8px !important;
+            background-color: #161616 !important;
+        }
+        /* Unified label + text area block: remove gap, merge visually */
+        div[data-testid="stWidgetLabel"] { margin-bottom: 0 !important; padding-bottom: 0 !important; }
+        div:has(> [data-testid="stTextArea"]) { gap: 0 !important; }
+        .element-container:has([data-testid="stTextArea"]) { gap: 0 !important; }
+        .element-container:has([data-testid="stTextArea"]) div[data-testid="stWidgetLabel"] {
+            margin-bottom: 0 !important; padding-bottom: 0 !important;
+            background-color: #161616 !important;
+            border-radius: 8px 8px 0 0 !important;
+            padding-top: 0.5rem !important; padding-left: 0.75rem !important; padding-right: 0.75rem !important;
+        }
+        .element-container:has([data-testid="stTextArea"]) [data-testid="stTextArea"] {
+            border-radius: 0 0 8px 8px !important;
+            border-top: none !important;
+        }
+        [data-theme="light"] .element-container:has([data-testid="stTextArea"]) div[data-testid="stWidgetLabel"] {
+            background-color: #f4f4f5 !important;
+        }
+        [data-testid="stFileUploader"], [data-testid="stFileUploader"] section {
+            border: none !important;
+            border-radius: 8px !important;
+            background-color: #161616 !important;
+        }
+        [data-theme="light"] [data-testid="stTextArea"] textarea,
+        [data-theme="light"] [data-testid="stTextArea"] div { background-color: #f4f4f5 !important; }
+        [data-theme="light"] [data-testid="stFileUploader"],
+        [data-theme="light"] [data-testid="stFileUploader"] section { background-color: #f4f4f5 !important; }
+        /* Control panel: no boxes, blend into background */
+        [data-testid="stExpander"] { border: none !important; background: transparent !important; }
+        [data-testid="stTextInput"] input { border: none !important; background-color: #161616 !important; border-radius: 6px !important; }
+        [data-theme="light"] [data-testid="stTextInput"] input { background-color: #f4f4f5 !important; }
+        [data-testid="stMetric"], section[data-testid="stExpander"] {
+            border: 1px solid #2A2A2A !important;
+            border-radius: 8px !important;
+            background-color: #111111 !important;
+        }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-    function csvCell(value) {
-      const text = String(value ?? "");
-      if (/[",\\n]/.test(text)) return '"' + text.replace(/"/g, '""') + '"';
-      return text;
-    }
+# Session state: initialize media transcript at top so it persists across reruns
+if "media_transcript" not in st.session_state:
+    st.session_state.media_transcript = ""
 
-    document.getElementById("export-btn").onclick = () => {
-      if (!lastPayload) return;
-      const rows = [["type", "title", "detail", "quote", "score", "source"]];
-      (lastPayload.feature_requests || []).forEach((item) => rows.push([
-        "feature_request", item.user_need, item.proposed_solution, item.supporting_quote, item.confidence_score, item.source_id
-      ]));
-      (lastPayload.pain_points || []).forEach((item) => rows.push([
-        "pain_point", item.issue_description, item.business_impact, item.supporting_quote, item.confidence_score, item.source_id
-      ]));
-      (lastPayload.core_themes || []).forEach((item) => rows.push([
-        "theme", item.theme_name, item.description, "", item.strategic_importance, ""
-      ]));
-      const csv = rows.map((row) => row.map(csvCell).join(",")).join("\\n");
-      const blob = new Blob([csv], { type: "text/csv" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "insightstream.csv";
-      a.click();
-      URL.revokeObjectURL(url);
-    };
+st.title("InsightStream — AI User Research Analyst")
+st.caption("Paste text, upload a document, or upload media to extract structured feature requests.")
 
-    document.getElementById("analyze-form").onsubmit = async (event) => {
-      event.preventDefault();
-      const button = document.getElementById("analyze-btn");
-      button.disabled = true;
-      setStatus("Analyzing transcript…");
-      try {
-        const response = await fetch("/api/analyze", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload()),
-        });
-        if (!response.ok) throw new Error(await readError(response));
-        const data = await response.json();
-        lastPayload = data;
-        render(data);
-        setStatus(data.error ? data.error : "Analysis complete.", Boolean(data.error));
-      } catch (err) {
-        setStatus(err.message || "Analysis failed.", true);
-      } finally {
-        button.disabled = false;
-      }
-    };
+# ---------------------------------------------------------------------------
+# Split-pane layout: main workspace (7) | control panel (3)
+# ---------------------------------------------------------------------------
 
-    document.getElementById("ask-btn").onclick = async () => {
-      const question = document.getElementById("question").value.trim();
-      if (!question) return;
-      const button = document.getElementById("ask-btn");
-      button.disabled = true;
-      answerEl.textContent = "Looking through the transcript…";
-      answerEl.className = "status";
-      try {
-        const response = await fetch("/api/query", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ...payload(), question }),
-        });
-        if (!response.ok) throw new Error(await readError(response));
-        const data = await response.json();
-        answerEl.textContent = data.answer || "No answer returned.";
-      } catch (err) {
-        answerEl.textContent = err.message || "Query failed.";
-        answerEl.className = "status error";
-      } finally {
-        button.disabled = false;
-      }
-    };
-  </script>
-</body>
-</html>
-"""
+cookie_manager = stx.CookieManager()
+_saved = cookie_manager.get(cookie="insightstream_api_key")
+saved_api_key = (_saved or os.getenv("GEMINI_API_KEY", "")) if _saved else os.getenv("GEMINI_API_KEY", "")
+
+main_workspace, control_panel = st.columns([7, 3], gap="large")
+
+# ---------------------------------------------------------------------------
+# Control Panel (right column): model and API key, no expander
+# ---------------------------------------------------------------------------
+
+with control_panel:
+    if "api_key_input" not in st.session_state:
+        st.session_state.api_key_input = saved_api_key or ""
+    api_key = st.text_input(
+        "Google Gemini API Key",
+        type="password",
+        help="Leave blank to use GEMINI_API_KEY from environment.",
+        key="api_key_input",
+    )
+    model = st.selectbox(
+        "Model",
+        options=["gemini-2.5-flash", "gemini-2.5-pro"],
+        index=0,
+        help="Model used by the Extractor node.",
+        key="model_select",
+    )
+
+# ---------------------------------------------------------------------------
+# Main Workspace (left column): tabs and input logic
+# ---------------------------------------------------------------------------
+
+with main_workspace:
+    tab_paste, tab_doc, tab_media = st.tabs(["Paste Text", "Upload Document", "Upload Media"])
+
+    pasted_text = ""
+    media_file = None
+
+    with tab_paste:
+        st.markdown("<div style='margin-top: 1.5rem;'></div>", unsafe_allow_html=True)
+        pasted_text = st.text_area(
+            "Paste transcript",
+            height=200,
+            placeholder="Paste your customer interview transcript here…",
+            help="Direct text input for analysis.",
+            key="paste_area",
+        )
+        st.markdown("<div style='margin-bottom: 1.5rem;'></div>", unsafe_allow_html=True)
+        pasted_text = (pasted_text or "").strip()
+
+    with tab_doc:
+        st.markdown("<div style='margin-top: 1.5rem;'></div>", unsafe_allow_html=True)
+        uploaded_files = st.file_uploader(
+            "Upload transcript (.txt)",
+            type=["txt"],
+            help="Raw customer interview transcript as plain text. Multiple files = one analysis per file.",
+            key="doc_uploader",
+            accept_multiple_files=True,
+        )
+        st.markdown("<div style='margin-bottom: 1.5rem;'></div>", unsafe_allow_html=True)
+
+    with tab_media:
+        st.markdown("<div style='margin-top: 1.5rem;'></div>", unsafe_allow_html=True)
+        media_file = st.file_uploader(
+            "Upload audio or video",
+            type=["mp4", "mp3", "wav"],
+            help="Supported: .mp4, .mp3, .wav. Click Transcribe to convert to text.",
+            key="media_uploader",
+        )
+        if media_file is not None:
+            if st.button("Transcribe", type="primary", key="transcribe_btn"):
+                with st.spinner("Transcribing audio…"):
+                    try:
+                        transcript_text = transcribe_media(media_file, speaker_diarization=True)
+                        st.session_state.media_transcript = transcript_text
+                        st.success("Transcription complete. Run **Analyze transcript** below to get insights.")
+                    except Exception as e:
+                        st.error(f"Transcription failed: {e}")
+                        st.session_state.media_transcript = ""
+            st.text_area(
+                "Transcription",
+                value=st.session_state.media_transcript,
+                height=150,
+                key="media_transcript_display",
+                disabled=True,
+            )
+            if st.session_state.media_transcript.strip():
+                if st.button("Swap Speaker 0 and 1", key="swap_speakers_btn", help="Fix diarization errors without re-transcribing."):
+                    t = st.session_state.media_transcript
+                    t = t.replace("Speaker 0", "__SPEAKER_1__").replace("Speaker 1", "Speaker 0").replace("__SPEAKER_1__", "Speaker 1")
+                    st.session_state.media_transcript = t
+                    st.rerun()
+        # Do not clear media_transcript when media_file is None (e.g. on rerun); it would wipe the saved transcript
+        st.markdown("<div style='margin-bottom: 1.5rem;'></div>", unsafe_allow_html=True)
+
+    # Standardized input list: one item per paste, per uploaded file, or media (no concatenation)
+    transcripts_to_process = []
+    if pasted_text:
+        transcripts_to_process.append({"name": "Pasted_Transcript", "content": clean_transcript(pasted_text)})
+    if uploaded_files:
+        for file in uploaded_files:
+            try:
+                raw = file.getvalue() if hasattr(file, "getvalue") else file.read()
+                try:
+                    decoded = raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    try:
+                        decoded = raw.decode("cp1252")
+                    except (UnicodeDecodeError, LookupError):
+                        decoded = raw.decode("latin-1")
+                transcripts_to_process.append({"name": file.name, "content": clean_transcript(decoded)})
+            except Exception as e:
+                st.error(f"Failed to read file {file.name}: {e}")
+    # Explicit variable passing: Analyze uses text from session state, not a local variable
+    media_transcript = st.session_state.get("media_transcript", "")
+    if media_transcript and media_transcript.strip():
+        transcripts_to_process.append({"name": "Media_Transcript", "content": clean_transcript(media_transcript)})
+
+    # ---------------------------------------------------------------------------
+    # Analysis block: run LangGraph per item when transcripts_to_process is populated
+    # ---------------------------------------------------------------------------
+
+    if transcripts_to_process:
+        st.subheader("Transcript preview")
+        with st.expander("Show transcript", expanded=False):
+            for item in transcripts_to_process:
+                st.markdown(f"**{item['name']}**")
+                preview = item["content"][:800] + ("..." if len(item["content"]) > 800 else "")
+                st.text(preview)
+                if item["name"] == "Media_Transcript" and item.get("content", "").strip():
+                    if st.button("Swap Speaker 0 and 1", key="swap_speakers_preview_btn"):
+                        t = st.session_state.media_transcript
+                        t = t.replace("Speaker 0", "__SPEAKER_1__").replace("Speaker 1", "Speaker 0").replace("__SPEAKER_1__", "Speaker 1")
+                        st.session_state.media_transcript = t
+                        st.rerun()
+                st.markdown("---")
+
+        if st.button("Analyze transcript", type="primary"):
+            results = []
+            for item in transcripts_to_process:
+                with st.spinner(f"Processing {item['name']}…"):
+                    try:
+                        feature_requests, pain_points, core_themes, error = run_agent(
+                            transcript=item["content"],
+                            api_key=api_key.strip() or None,
+                            model=model,
+                        )
+                    except Exception as e:
+                        st.error(f"Gemini agent error ({item['name']}): {e}")
+                        feature_requests = []
+                        pain_points = []
+                        core_themes = []
+                        error = str(e)
+                results.append({
+                    "name": item["name"],
+                    "transcript": item["content"],
+                    "feature_requests": feature_requests,
+                    "pain_points": pain_points,
+                    "core_themes": core_themes,
+                    "error": error or "",
+                })
+            st.session_state["analysis_results"] = results
+            st.toast("Analysis successfully completed!")
+
+        if st.session_state.get("analysis_results"):
+            for res in st.session_state["analysis_results"]:
+                name = res["name"]
+                safe = _safe_key(name)
+                feature_requests = res["feature_requests"]
+                pain_points = res["pain_points"]
+                core_themes = res["core_themes"]
+                error = res["error"]
+
+                if error:
+                    st.error(error)
+
+                st.markdown(f"### 📄 Insights from: {name}")
+                st.divider()
+
+                if core_themes:
+                    st.subheader("🌟 Synthesized Core Themes")
+                    for t in core_themes:
+                        with st.container():
+                            st.markdown(f"**{t.get('theme_name', '—')}** · Strategic importance: **{t.get('strategic_importance', '—')}/10**")
+                            st.markdown(t.get("description", "—"))
+                            st.markdown("---")
+                    st.divider()
+
+                st.subheader("Looking for something specific?")
+                rag_question = st.text_input(
+                    "Ask a question about this transcript (e.g. “What did they say about login?”)",
+                    key=f"rag_input_{safe}",
+                    placeholder="e.g. What did they say about login speed?",
+                    label_visibility="collapsed",
+                )
+                if st.button("Find in transcript", key=f"rag_btn_{safe}") and (rag_question or "").strip():
+                    full_transcript = res.get("transcript") or ""
+                    if not full_transcript.strip():
+                        st.warning("No transcript stored for this result. Re-run analysis to enable queries.")
+                    else:
+                        with st.spinner("Searching transcript…"):
+                            try:
+                                answer = query_transcript(
+                                    question=rag_question.strip(),
+                                    transcript=full_transcript,
+                                    api_key=api_key.strip() or None,
+                                    model=model,
+                                )
+                                if answer:
+                                    st.markdown(answer)
+                                else:
+                                    st.caption("No answer returned.")
+                            except Exception as e:
+                                st.error(f"Query failed: {e}")
+                    st.divider()
+
+                st.subheader("Identified Pain Points")
+                if pain_points:
+                    num_cards = len(pain_points)
+                    cols = st.columns(2 if num_cards >= 2 else 1)
+                    for idx, pp in enumerate(pain_points):
+                        col = cols[idx % 2]
+                        with col:
+                            with st.container():
+                                st.markdown("---")
+                                st.markdown(f"**Pain point {idx + 1}**")
+                                confidence = pp.get("confidence_score", 0)
+                                st.metric("Confidence Score", f"{confidence}/10", delta=None)
+                                st.markdown(f"**Issue:** {pp.get('issue_description', '—')}")
+                                st.markdown(f"**Business impact:** {pp.get('business_impact', '—')}")
+                                st.markdown(f"**Supporting quote:** _{pp.get('supporting_quote', '—')}_")
+                                st.checkbox("Approve for Backlog", value=True, key=f"pp_{safe}_{idx}")
+                else:
+                    st.caption("No pain points identified.")
+                st.divider()
+
+                st.subheader("Feature Requests")
+                if feature_requests:
+                    num_cards = len(feature_requests)
+                    cols = st.columns(2 if num_cards >= 2 else 1)
+                    for idx, req in enumerate(feature_requests):
+                        col = cols[idx % 2]
+                        with col:
+                            with st.container():
+                                st.markdown("---")
+                                st.markdown(f"**Feature request {idx + 1}**")
+                                confidence = req.get("confidence_score", 0)
+                                st.metric("Confidence Score", f"{confidence}/10", delta=None)
+                                st.markdown(f"**User need:** {req.get('user_need', '—')}")
+                                st.markdown(f"**Proposed solution:** {req.get('proposed_solution', '—')}")
+                                st.markdown(f"**Supporting quote:** _{req.get('supporting_quote', '—')}_")
+                                st.checkbox("Approve for Backlog", value=True, key=f"fr_{safe}_{idx}")
+                else:
+                    st.caption("No feature requests identified.")
+                st.divider()
+
+                st.subheader("Raw JSON Structure")
+                with st.expander(f"Show JSON — {name}", expanded=False):
+                    st.json({"feature_requests": feature_requests, "pain_points": pain_points})
+
+                approved_rows = []
+                for idx, pp in enumerate(pain_points):
+                    if st.session_state.get(f"pp_{safe}_{idx}", True):
+                        approved_rows.append({
+                            "Category": "Pain Point",
+                            "Core Issue/Need": pp.get("issue_description", ""),
+                            "Impact/Solution": pp.get("business_impact", ""),
+                            "Supporting Quote": pp.get("supporting_quote", ""),
+                            "Confidence Score": pp.get("confidence_score", ""),
+                        })
+                for idx, req in enumerate(feature_requests):
+                    if st.session_state.get(f"fr_{safe}_{idx}", True):
+                        approved_rows.append({
+                            "Category": "Feature Request",
+                            "Core Issue/Need": req.get("user_need", ""),
+                            "Impact/Solution": req.get("proposed_solution", ""),
+                            "Supporting Quote": req.get("supporting_quote", ""),
+                            "Confidence Score": req.get("confidence_score", ""),
+                        })
+                cols_export = ["Category", "Core Issue/Need", "Impact/Solution", "Supporting Quote", "Confidence Score"]
+                df_export = pd.DataFrame(approved_rows, columns=cols_export) if approved_rows else pd.DataFrame(columns=cols_export)
+                st.download_button(
+                    "⬇️ Download Approved Insights (CSV)",
+                    data=df_export.to_csv(index=False).encode("utf-8"),
+                    file_name=f"Insights_{name}.csv",
+                    mime="text/csv",
+                    key=f"download_{safe}",
+                )
+                st.divider()
